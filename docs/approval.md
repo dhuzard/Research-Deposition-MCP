@@ -28,6 +28,8 @@ repository publish
 
 A signed receipt is not a secret bearer token. It is a verifiable authorization statement that is useful only for the exact package, repository endpoint, draft, and policy encoded in it, and only for a short time.
 
+The trusted public-key file does not need confidentiality, but it **does** need integrity: the agent must not be able to replace or rewrite the public key used by the running MCP server. Production deployments should protect that file and the server configuration from agent-side writes.
+
 ## Approval request
 
 `publication_review` returns an `approvalRequest` containing:
@@ -42,16 +44,19 @@ The request contains no repository credentials.
 
 ## Key generation
 
-Build the project, then create an operator key pair outside the agent workspace:
+From a source checkout, build the project and create an operator key pair outside the agent workspace:
 
 ```bash
+mkdir -p ~/.config/research-deposition
 npm run build
-research-deposition-approve keygen \
+npm run approve -- keygen \
   --private-key ~/.config/research-deposition/operator-private.pem \
   --public-key ~/.config/research-deposition/operator-public.pem
 ```
 
-The CLI creates the private key with restrictive file permissions and refuses to overwrite an existing file.
+If the package is installed globally or as a CLI package, the equivalent installed command is `research-deposition-approve`.
+
+The CLI creates the private key with restrictive file permissions, refuses to overwrite an existing file, and on POSIX refuses to sign with a group/world-readable private key.
 
 Configure the MCP server with only the public key:
 
@@ -63,10 +68,10 @@ Do not put the private key in MCP configuration, repository secrets exposed to t
 
 ## Signing an approval request
 
-Save the `approvalRequest` returned by `publication_review` as JSON and run:
+Save the `approvalRequest` returned by `publication_review` as JSON and run from a source checkout:
 
 ```bash
-research-deposition-approve sign \
+npm run approve -- sign \
   --request approval-request.json \
   --private-key ~/.config/research-deposition/operator-private.pem \
   --receipt approval-receipt.json
