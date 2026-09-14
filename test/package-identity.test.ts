@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import type { FileManifest } from "../src/manifest.js";
 import {
+  buildPublicationIdentity,
   canonicalizeResearchDeposit,
   createPublicationIdentity,
   PackageIdentityError,
@@ -88,6 +92,29 @@ test("object insertion order and unknown operational fields do not affect identi
   const two = createPublicationIdentity(reordered, manifest);
   assert.equal(one.digest, two.digest);
   assert.equal(one.canonical, two.canonical);
+});
+
+test("identical selected content in different absolute roots produces the same digest", async () => {
+  const firstRoot = await mkdtemp(path.join(os.tmpdir(), "rdm-package-a-"));
+  const secondRoot = await mkdtemp(path.join(os.tmpdir(), "rdm-package-b-"));
+  try {
+    for (const root of [firstRoot, secondRoot]) {
+      await mkdir(path.join(root, "data"), { recursive: true });
+      await writeFile(path.join(root, "data", "a.csv"), "a,b\n1,2\n");
+      await writeFile(path.join(root, "README.md"), "same package\n");
+    }
+    const rules = { include: ["data/**", "README.md"] };
+    const first = await buildPublicationIdentity(metadata(), firstRoot, rules);
+    const second = await buildPublicationIdentity(metadata(), secondRoot, rules);
+    assert.notEqual(firstRoot, secondRoot);
+    assert.equal(first.digest, second.digest);
+    assert.equal(first.canonical, second.canonical);
+    assert.ok(!first.canonical.includes(firstRoot));
+    assert.ok(!second.canonical.includes(secondRoot));
+  } finally {
+    await rm(firstRoot, { recursive: true, force: true });
+    await rm(secondRoot, { recursive: true, force: true });
+  }
 });
 
 test("scientifically relevant metadata mutation changes the digest", () => {
