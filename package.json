@@ -15,6 +15,7 @@
     "test": "npm run build && node --test build/test/*.test.js",
     "check": "npm run test",
     "start": "node build/src/index.js",
+    "approve": "node build/src/approval-cli.js",
     "prepublishOnly": "npm run check"
   },
   "repository": {
