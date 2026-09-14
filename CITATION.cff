@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use Research Deposition MCP, please cite the software using the metadata from this file."
+title: "Research Deposition MCP"
+type: software
+authors:
+  - family-names: Huzard
+    given-names: Damien
+version: 0.1.0
+date-released: 2026-09-14
+repository-code: "https://github.com/dhuzard/Research-Deposition-MCP"
+license: MIT
+keywords:
+  - Model Context Protocol
+  - Zenodo
+  - FAIR
+  - open science
+  - research data
