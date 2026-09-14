@@ -59,7 +59,9 @@ function compareCodeUnits(a: string, b: string): number {
 }
 
 function normalizeSlashes(value: string): string {
-  return value.replaceAll("\\", "/");
+  // NFC avoids machine/filesystem-dependent composed-vs-decomposed Unicode
+  // representations changing the canonical manifest.
+  return value.replaceAll("\\", "/").normalize("NFC");
 }
 
 function hasTraversalSegment(value: string): boolean {
@@ -191,7 +193,14 @@ async function walkFiles(rootDir: string): Promise<string[]> {
       }
       if (entry.isFile()) {
         files.push(relative);
+        continue;
       }
+
+      throw new ManifestError(
+        "unsupported_file_type",
+        "Only regular files and directories are allowed under a manifest root in schema v1.",
+        relative,
+      );
     }
   }
 
@@ -325,18 +334,19 @@ export async function buildFileManifest(rootDir: string, rules: FileSelectionRul
   for (const sourcePath of selected) {
     const absolutePath = path.resolve(absoluteRoot, ...sourcePath.split("/"));
     const relativeCheck = path.relative(absoluteRoot, absolutePath);
-    if (relativeCheck.startsWith("..") || path.isAbsolute(relativeCheck)) {
+    if (relativeCheck === ".." || relativeCheck.startsWith(`..${path.sep}`) || path.isAbsolute(relativeCheck)) {
       throw new ManifestError("path_traversal", `Selected file escapes the declared root: ${sourcePath}`, sourcePath);
     }
 
     const { sha256, size } = await sha256File(absolutePath);
     const depositPath = destinationMap.get(sourcePath) ?? sourcePath;
+    const mediaType = mediaTypeFor(depositPath);
     entries.push({
       sourcePath,
       depositPath,
       size,
       sha256,
-      ...(mediaTypeFor(depositPath) ? { mediaType: mediaTypeFor(depositPath) } : {}),
+      ...(mediaType ? { mediaType } : {}),
     });
   }
 
