@@ -6,7 +6,7 @@
 
 A safety-first Model Context Protocol (MCP) server for preparing scholarly deposits from agentic research workflows. Zenodo is the first repository adapter; the core model is intentionally repository-independent.
 
-> **Project status:** v0.1 / early development. Use Zenodo Sandbox for testing. The current publication gate is a guardrail, not a complete authenticated human-approval system.
+> **Project status:** v0.2 in progress / early development. Use Zenodo Sandbox for testing. The current publication gate is a guardrail, not a complete authenticated human-approval system.
 
 ## Why this exists
 
@@ -20,10 +20,14 @@ The design principle is simple: agents may help prepare a deposit, but they shou
 
 ## Current scope
 
-Implemented in v0.1:
+Implemented:
 
 - repository-independent research-deposit model;
 - deterministic schema validation with warnings;
+- deterministic file selection with explicit include/exclude rules;
+- repository-independent file manifest with POSIX-normalized source/deposit paths, byte size, and SHA-256;
+- canonical byte-stable manifest serialization;
+- strict rejection of symlinks and path traversal for manifest construction;
 - Zenodo adapter;
 - Zenodo Sandbox as the default endpoint;
 - draft creation and retrieval;
@@ -33,7 +37,7 @@ Implemented in v0.1:
 - publication disabled by default;
 - explicit confirmation phrase required when publication is enabled.
 
-Planned, but **not yet implemented**, include manifest hashing, approval bound to an immutable digest, audit logs, RO-Crate/CITATION.cff/ISA/ORW importers, identifier validation, and additional repository adapters. See [ROADMAP.md](ROADMAP.md).
+Planned, but **not yet implemented**, include a digest over canonical metadata plus the file manifest, approval bound to that immutable digest, audit logs, RO-Crate/CITATION.cff/ISA/ORW importers, identifier validation, and additional repository adapters. See [ROADMAP.md](ROADMAP.md) and [BACKLOG.md](BACKLOG.md).
 
 ## MCP tools
 
@@ -41,12 +45,15 @@ Planned, but **not yet implemented**, include manifest hashing, approval bound t
 |---|---|---:|
 | `deposition_status` | Report backend and safety configuration without exposing secrets | No |
 | `validate_deposition` | Validate repository-independent metadata | No |
+| `build_file_manifest` | Deterministically select and SHA-256 files without uploading them | No |
 | `create_draft` | Validate metadata and create an unpublished Zenodo draft | No |
 | `get_draft` | Retrieve a draft | No |
 | `update_draft` | Validate and replace draft metadata | No |
 | `upload_file` | Upload a local file to a draft | No |
 | `publication_review` | Retrieve the draft and required confirmation phrase | No |
 | `publish_draft` | Publish a reviewed draft when explicitly enabled | **Yes** |
+
+The manifest selection and normalization contract is documented in [docs/file-manifest.md](docs/file-manifest.md).
 
 ## Safety defaults
 
@@ -57,7 +64,7 @@ ZENODO_ALLOW_PUBLISH=false
 
 Production publication therefore requires deliberate operator configuration. `publish_draft` additionally requires the exact confirmation string `PUBLISH <draft-id>`.
 
-These controls reduce accidental publication, but they do **not** yet prove that a particular authenticated human approved an immutable package. The v0.2 design will bind approval to a digest over metadata plus a file manifest. See [docs/safety-model.md](docs/safety-model.md).
+These controls reduce accidental publication, but they do **not** yet prove that a particular authenticated human approved an immutable package. The v0.2 design will bind approval to a digest over metadata plus the file manifest. See [docs/safety-model.md](docs/safety-model.md).
 
 ## Requirements
 
@@ -123,6 +130,21 @@ Do not commit tokens or put them into MCP configuration files that will be versi
 
 The common model deliberately avoids Zenodo field names. Repository-specific transformations live in adapters.
 
+## File manifest example
+
+```json
+{
+  "rootDir": "/path/to/project",
+  "include": ["data/**", "README.md"],
+  "exclude": ["data/intermediate/**"],
+  "destinations": {
+    "README.md": "documentation/README.md"
+  }
+}
+```
+
+`build_file_manifest` returns a manifest containing only repository-independent relative paths and content identity. Absolute local paths are not serialized. Symlinks and `..` traversal are rejected. See [docs/file-manifest.md](docs/file-manifest.md).
+
 ## Architecture
 
 ```text
@@ -132,6 +154,7 @@ Agentic client
 Research Deposition MCP
  ├─ deterministic validation / policy
  ├─ common research-deposit model
+ ├─ deterministic file-manifest layer
  └─ repository adapters
        ├─ Zenodo (v0.1)
        ├─ InvenioRDM (planned)
