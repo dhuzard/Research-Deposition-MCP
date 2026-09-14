@@ -6,9 +6,9 @@ import path from "node:path";
 export const FILE_MANIFEST_SCHEMA_VERSION = "1" as const;
 
 export interface FileManifestEntry {
-  /** POSIX-normalized path relative to the declared local root. */
+  /** POSIX/NFC-normalized path relative to the declared local root. */
   sourcePath: string;
-  /** POSIX-normalized path/name to use in the target repository. */
+  /** POSIX/NFC-normalized path/name to use in the target repository. */
   depositPath: string;
   size: number;
   sha256: string;
@@ -38,6 +38,13 @@ export class ManifestError extends Error {
     super(message);
     this.name = "ManifestError";
   }
+}
+
+interface DiscoveredFile {
+  /** Canonical path used for matching and serialization. */
+  sourcePath: string;
+  /** Raw machine-local path used only to open/hash the file. */
+  absolutePath: string;
 }
 
 const MEDIA_TYPES: Record<string, string> = {
@@ -155,7 +162,7 @@ function matchesAny(value: string, patterns: RegExp[]): boolean {
   return patterns.some((pattern) => pattern.test(value));
 }
 
-async function walkFiles(rootDir: string): Promise<string[]> {
+async function walkFiles(rootDir: string): Promise<DiscoveredFile[]> {
   const rootStat = await lstat(rootDir).catch((error: NodeJS.ErrnoException) => {
     throw new ManifestError("root_unavailable", `Cannot inspect manifest root: ${error.message}`, rootDir);
   });
@@ -167,39 +174,51 @@ async function walkFiles(rootDir: string): Promise<string[]> {
     throw new ManifestError("root_not_directory", "The manifest root must be a directory.", rootDir);
   }
 
-  const files: string[] = [];
+  const files: DiscoveredFile[] = [];
+  const seenCanonicalPaths = new Set<string>();
 
-  async function walk(absoluteDir: string, relativeDir: string): Promise<void> {
+  async function walk(absoluteDir: string, canonicalDir: string): Promise<void> {
     const entries = await readdir(absoluteDir, { withFileTypes: true });
     entries.sort((a, b) => compareCodeUnits(a.name, b.name));
 
     for (const entry of entries) {
-      const relative = normalizeManifestPath(
-        relativeDir ? `${relativeDir}/${entry.name}` : entry.name,
+      // Keep the raw entry name for local filesystem access, but derive a
+      // normalized path for matching and the publication contract.
+      const canonicalPath = normalizeManifestPath(
+        canonicalDir ? `${canonicalDir}/${entry.name}` : entry.name,
         "filesystem path",
       );
-      const absolute = path.join(absoluteDir, entry.name);
+      const absolutePath = path.join(absoluteDir, entry.name);
+
+      if (seenCanonicalPaths.has(canonicalPath)) {
+        throw new ManifestError(
+          "duplicate_source_path",
+          `Multiple filesystem entries normalize to the same manifest path: ${canonicalPath}`,
+          canonicalPath,
+        );
+      }
+      seenCanonicalPaths.add(canonicalPath);
 
       if (entry.isSymbolicLink()) {
         throw new ManifestError(
           "symlink_rejected",
           "Symbolic links are not allowed anywhere under a manifest root in schema v1.",
-          relative,
+          canonicalPath,
         );
       }
       if (entry.isDirectory()) {
-        await walk(absolute, relative);
+        await walk(absolutePath, canonicalPath);
         continue;
       }
       if (entry.isFile()) {
-        files.push(relative);
+        files.push({ sourcePath: canonicalPath, absolutePath });
         continue;
       }
 
       throw new ManifestError(
         "unsupported_file_type",
         "Only regular files and directories are allowed under a manifest root in schema v1.",
-        relative,
+        canonicalPath,
       );
     }
   }
@@ -316,9 +335,11 @@ export async function buildFileManifest(rootDir: string, rules: FileSelectionRul
   }
 
   const discovered = await walkFiles(absoluteRoot);
-  const selected = discovered.filter((candidate) => matchesAny(candidate, include) && !matchesAny(candidate, exclude));
-  selected.sort(compareCodeUnits);
-  const selectedSet = new Set(selected);
+  const selected = discovered.filter(
+    (candidate) => matchesAny(candidate.sourcePath, include) && !matchesAny(candidate.sourcePath, exclude),
+  );
+  selected.sort((a, b) => compareCodeUnits(a.sourcePath, b.sourcePath));
+  const selectedSet = new Set(selected.map((candidate) => candidate.sourcePath));
 
   for (const source of destinationMap.keys()) {
     if (!selectedSet.has(source)) {
@@ -331,8 +352,8 @@ export async function buildFileManifest(rootDir: string, rules: FileSelectionRul
   }
 
   const entries: FileManifestEntry[] = [];
-  for (const sourcePath of selected) {
-    const absolutePath = path.resolve(absoluteRoot, ...sourcePath.split("/"));
+  for (const selectedFile of selected) {
+    const { sourcePath, absolutePath } = selectedFile;
     const relativeCheck = path.relative(absoluteRoot, absolutePath);
     if (relativeCheck === ".." || relativeCheck.startsWith(`..${path.sep}`) || path.isAbsolute(relativeCheck)) {
       throw new ManifestError("path_traversal", `Selected file escapes the declared root: ${sourcePath}`, sourcePath);
