@@ -1,0 +1,36 @@
+{
+  "name": "research-deposition-mcp",
+  "version": "0.1.0",
+  "description": "Safety-first MCP server for preparing and publishing research deposits, with Zenodo as the first repository adapter.",
+  "type": "module",
+  "main": "build/src/index.js",
+  "bin": {
+    "research-deposition-mcp": "./build/src/index.js"
+  },
+  "files": ["build/", "README.md", "LICENSE"],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf build",
+    "test": "npm run build && node --test build/test/*.test.js",
+    "check": "npm run test",
+    "start": "node build/src/index.js",
+    "prepublishOnly": "npm run check"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dhuzard/Research-Deposition-MCP.git"
+  },
+  "homepage": "https://github.com/dhuzard/Research-Deposition-MCP#readme",
+  "bugs": {"url": "https://github.com/dhuzard/Research-Deposition-MCP/issues"},
+  "keywords": ["mcp", "model-context-protocol", "zenodo", "fair", "open-science", "research-data", "scholarly-communication"],
+  "license": "MIT",
+  "engines": {"node": ">=20"},
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.2"
+  }
+}
