@@ -6,6 +6,8 @@ import {
   generateApprovalKeyPair,
   verifyApprovalReceipt,
 } from "../src/approval.js";
+import type { FileManifest } from "../src/manifest.js";
+import { createPublicationIdentity } from "../src/package-identity.js";
 
 const ISSUED = new Date("2026-09-14T18:00:00.000Z");
 const NOW = new Date("2026-09-14T18:05:00.000Z");
@@ -19,6 +21,24 @@ function request(overrides: Partial<ReturnType<typeof createApprovalRequest>> = 
     policyVersion: "1",
     ...overrides,
   });
+}
+
+function packageMetadata() {
+  return {
+    title: "Approved dataset",
+    description: "A sufficiently descriptive dataset used to test package-bound approval.",
+    resourceType: "dataset",
+    creators: [{ name: "Doe, Jane" }],
+    keywords: ["approval"],
+    license: "cc-by-4.0",
+  };
+}
+
+function packageManifest(sha = "a".repeat(64)): FileManifest {
+  return {
+    schemaVersion: "1",
+    entries: [{ sourcePath: "data.csv", depositPath: "data.csv", size: 10, sha256: sha, mediaType: "text/csv" }],
+  };
 }
 
 test("signed approval verifies deterministically for the exact target and package", () => {
@@ -41,6 +61,42 @@ test("signed approval verifies deterministically for the exact target and packag
   assert.deepEqual(first, second);
   assert.equal(first.valid, true);
   assert.deepEqual(first.issues, []);
+});
+
+test("a package-bound receipt passes unchanged and fails after metadata or selected-file mutation", () => {
+  const pair = generateApprovalKeyPair();
+  const baseline = createPublicationIdentity(packageMetadata(), packageManifest());
+  const approvedRequest = request({ packageDigest: baseline.digest });
+  const receipt = createApprovalReceipt(approvedRequest, pair.privateKeyPem, {
+    issuedAt: ISSUED,
+    nonce: "fixed-nonce-for-test-123",
+  });
+
+  const unchanged = verifyApprovalReceipt(receipt, pair.publicKeyPem, approvedRequest, { now: NOW });
+  assert.equal(unchanged.valid, true);
+
+  const metadataChanged = createPublicationIdentity(
+    { ...packageMetadata(), description: "The scientific description changed after approval." },
+    packageManifest(),
+  );
+  const metadataReport = verifyApprovalReceipt(
+    receipt,
+    pair.publicKeyPem,
+    request({ packageDigest: metadataChanged.digest }),
+    { now: NOW },
+  );
+  assert.equal(metadataReport.valid, false);
+  assert.ok(metadataReport.issues.some((issue) => issue.code === "package_digest_mismatch"));
+
+  const fileChanged = createPublicationIdentity(packageMetadata(), packageManifest("b".repeat(64)));
+  const fileReport = verifyApprovalReceipt(
+    receipt,
+    pair.publicKeyPem,
+    request({ packageDigest: fileChanged.digest }),
+    { now: NOW },
+  );
+  assert.equal(fileReport.valid, false);
+  assert.ok(fileReport.issues.some((issue) => issue.code === "package_digest_mismatch"));
 });
 
 test("metadata/package mutation invalidates approval through digest mismatch", () => {
