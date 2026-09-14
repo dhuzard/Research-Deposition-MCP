@@ -2,6 +2,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { buildFileManifest, ManifestError, serializeManifest } from "./manifest.js";
 import { validateDeposit } from "./model.js";
 import { ZenodoAdapter } from "./adapters/zenodo.js";
 
@@ -32,6 +33,33 @@ server.registerTool("validate_deposition", {
   description: "Deterministically validate repository-independent research deposition metadata. Never publishes anything.",
   inputSchema: { metadata: z.unknown() },
 }, async ({ metadata }) => text(validateDeposit(metadata).report));
+
+server.registerTool("build_file_manifest", {
+  description: "Build a deterministic repository-independent SHA-256 manifest from explicit include/exclude rules. Never uploads or publishes files.",
+  inputSchema: {
+    rootDir: z.string().min(1),
+    include: z.array(z.string().min(1)).min(1),
+    exclude: z.array(z.string().min(1)).optional(),
+    destinations: z.record(z.string(), z.string()).optional(),
+  },
+}, async ({ rootDir, include, exclude, destinations }) => {
+  try {
+    const manifest = await buildFileManifest(rootDir, { include, exclude, destinations });
+    return text({ manifest, canonical: serializeManifest(manifest) });
+  } catch (error) {
+    if (error instanceof ManifestError) {
+      return {
+        ...text({
+          error: error.code,
+          message: error.message,
+          path: error.manifestPath,
+        }),
+        isError: true,
+      };
+    }
+    throw error;
+  }
+});
 
 server.registerTool("create_draft", {
   description: "Validate metadata and create an unpublished repository draft. Default backend is Zenodo Sandbox.",
