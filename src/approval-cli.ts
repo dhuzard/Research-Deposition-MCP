@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { chmod, readFile, writeFile } from "node:fs/promises";
+import { chmod, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import {
@@ -28,10 +28,25 @@ async function keygen(args: string[]): Promise<void> {
   if (!privatePath || !publicPath) usage();
 
   const pair = generateApprovalKeyPair();
-  await writeFile(privatePath, pair.privateKeyPem, { encoding: "utf8", mode: 0o600, flag: "wx" });
-  await chmod(privatePath, 0o600);
-  await writeFile(publicPath, pair.publicKeyPem, { encoding: "utf8", mode: 0o644, flag: "wx" });
+  let privateWritten = false;
+  try {
+    await writeFile(privatePath, pair.privateKeyPem, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    privateWritten = true;
+    await chmod(privatePath, 0o600);
+    await writeFile(publicPath, pair.publicKeyPem, { encoding: "utf8", mode: 0o644, flag: "wx" });
+  } catch (error) {
+    if (privateWritten) await unlink(privatePath).catch(() => undefined);
+    throw error;
+  }
   console.log(JSON.stringify({ publicKey: publicPath, privateKey: privatePath, keyId: pair.keyId }, null, 2));
+}
+
+async function assertPrivateKeyPermissions(privatePath: string): Promise<void> {
+  if (process.platform === "win32") return;
+  const info = await stat(privatePath);
+  if ((info.mode & 0o077) !== 0) {
+    throw new Error("Approval private key is group/world accessible. Restrict it to mode 0600 before signing.");
+  }
 }
 
 async function signRequest(args: string[]): Promise<void> {
@@ -44,6 +59,7 @@ async function signRequest(args: string[]): Promise<void> {
     throw new Error("Approval signing requires an interactive TTY. It is intentionally not a non-interactive agent tool.");
   }
 
+  await assertPrivateKeyPermissions(privatePath);
   const request = canonicalizeApprovalRequest(JSON.parse(await readFile(requestPath, "utf8")));
   const privateKeyPem = await readFile(privatePath, "utf8");
   const expiresInSeconds = expiresRaw === undefined ? 900 : Number(expiresRaw);
