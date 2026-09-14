@@ -1,0 +1,36 @@
+name: Feature request
+description: Propose a new capability, mapping, repository adapter, or safety improvement
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Research workflow / problem
+      description: What concrete research or deposition workflow needs this feature?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed capability
+      description: Describe the behavior rather than only the implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: standards
+    attributes:
+      label: Repository or metadata standards involved
+      placeholder: Zenodo, InvenioRDM, Dataverse, DataCite, ISA, RO-Crate, CITATION.cff, ORCID, ROR...
+  - type: textarea
+    id: risks
+    attributes:
+      label: Write/safety implications
+      description: Could this expose data, modify a record, publish a DOI, alter attribution, or otherwise create an irreversible effect?
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Deterministic validation / tests
+      description: How should correct behavior be verified without relying on an LLM judgment?
