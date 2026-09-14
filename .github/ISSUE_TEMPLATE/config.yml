@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security issue
+    url: https://github.com/dhuzard/Research-Deposition-MCP/security
+    about: Please use a private security channel for vulnerabilities; do not disclose secrets in public issues.
