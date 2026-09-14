@@ -1,0 +1,45 @@
+name: Bug report
+description: Report a reproducible problem in Research Deposition MCP
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include access tokens, unpublished sensitive data, or security vulnerabilities here. See SECURITY.md for private reporting guidance.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Minimal reproduction
+      description: Provide the smallest safe example that reproduces the problem.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: v0.1.0 or commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Repository backend
+      options:
+        - Zenodo Sandbox
+        - Zenodo production
+        - Other / not applicable
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Node version, OS, MCP client, and relevant non-secret configuration.
