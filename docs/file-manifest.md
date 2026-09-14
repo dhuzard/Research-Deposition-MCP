@@ -8,8 +8,8 @@ Local filesystem locations are operational inputs only. Absolute paths are never
 
 Each manifest entry records:
 
-- `sourcePath` — POSIX-normalized path relative to the declared local root;
-- `depositPath` — POSIX-normalized path/name that should be used by the target repository;
+- `sourcePath` — POSIX- and NFC-normalized path relative to the declared local root;
+- `depositPath` — POSIX- and NFC-normalized path/name that should be used by the target repository;
 - `size` — file size in bytes;
 - `sha256` — lowercase SHA-256 digest of file content;
 - `mediaType` — optional inferred media type for a small set of common extensions.
@@ -27,6 +27,8 @@ data/behavior-summary.csv
 ```
 
 without embedding `/home/user/project/...` or another machine-specific path in the publication contract.
+
+The implementation retains raw filesystem paths internally for opening files. Only normalized paths enter matching and serialization. This matters on filesystems that expose decomposed Unicode names: a decomposed local filename can still be opened correctly while its manifest identity is normalized to NFC.
 
 ## Explicit selection rules
 
@@ -65,7 +67,7 @@ Character classes (`[abc]`) and brace expansion (`{csv,tsv}`) are not supported 
 
 ## Path safety
 
-All manifest and rule paths are normalized to POSIX `/` separators.
+All manifest and rule paths are normalized to POSIX `/` separators and Unicode NFC.
 
 The following are rejected:
 
@@ -75,7 +77,8 @@ The following are rejected:
 - any explicit `..` path segment;
 - NUL bytes;
 - duplicate normalized source paths;
-- duplicate normalized `depositPath` values.
+- duplicate normalized `depositPath` values;
+- non-regular filesystem entries such as sockets or named pipes.
 
 Destination mappings are exact source-path mappings. A destination mapping that refers to a file not selected by the include/exclude rules is rejected rather than silently ignored.
 
@@ -91,7 +94,7 @@ A later schema version may introduce an explicit, independently reviewable symli
 
 Before serialization:
 
-1. paths are normalized;
+1. path separators are normalized and Unicode is normalized to NFC;
 2. entries are validated;
 3. entries are sorted by `depositPath`, then `sourcePath` using code-unit ordering;
 4. duplicate normalized paths are rejected;
