@@ -5,7 +5,8 @@
   "type": "module",
   "main": "build/src/index.js",
   "bin": {
-    "research-deposition-mcp": "./build/src/index.js"
+    "research-deposition-mcp": "./build/src/index.js",
+    "research-deposition-approve": "./build/src/approval-cli.js"
   },
   "files": ["build/", "README.md", "LICENSE"],
   "scripts": {
