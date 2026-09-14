@@ -47,6 +47,21 @@ test("builds a byte-stable canonical manifest for empty, binary, Unicode, and ne
   });
 });
 
+test("normalizes decomposed Unicode names without losing access to the raw local file", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "research-deposition-unicode-"));
+  try {
+    const decomposedName = "e\u0301chantillon.txt";
+    await writeFile(path.join(root, decomposedName), "unicode path\n");
+
+    const manifest = await buildFileManifest(root, { include: ["échantillon.txt"] });
+    assert.equal(manifest.entries.length, 1);
+    assert.equal(manifest.entries[0].sourcePath, "échantillon.txt");
+    assert.equal(normalizeManifestPath(decomposedName), "échantillon.txt");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("selected file content mutations change the manifest", async () => {
   await withFixture(async (root) => {
     const rules = { include: ["nested/**"] };
