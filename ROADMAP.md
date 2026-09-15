@@ -1,5 +1,7 @@
 # Roadmap
 
+This file gives the release-level direction. See [`BACKLOG.md`](BACKLOG.md) for the detailed execution plan, dependencies, acceptance criteria, release gates, and linked GitHub issues.
+
 ## v0.1 — safe Zenodo draft path
 - Common deposition model
 - Metadata validation
@@ -9,26 +11,44 @@
 - Publication review
 - Operator publication gate
 
-## v0.2 — reproducible publication package
+## v0.2 — reproducible, approval-bound publication package
 - File manifest (path, size, SHA-256)
-- Include/exclude rules
-- Frozen metadata + manifest digest
-- Approval token bound to digest
-- Audit event log
-- Stronger Zenodo schema coverage
+- Explicit include/exclude rules
+- Canonical metadata + manifest digest
+- Human approval bound to exact package digest
+- Pre-publication mutation detection
+- Append-only audit event log
+- Stronger Zenodo mapping and Sandbox end-to-end tests
 
-## v0.3 — scientific metadata sources
+Epic: #5
+
+## v0.3 — scientific metadata ingestion
+- Importer abstraction
 - RO-Crate importer
 - CITATION.cff importer
 - ORW project importer
 - ISA Investigation/Study/Assay mapping
+- Field-level provenance and conflict reporting
 - ORCID, ROR, SPDX/license validation
-- DataCite-compatible common fields
+- DataCite-compatible identifiers and relations
+
+Epic: #11
 
 ## v0.4 — repository independence
+- Adapter capability model
+- Adapter conformance tests
 - InvenioRDM adapter
 - Dataverse adapter
-- Adapter conformance tests
+- Documented mapping/loss semantics across repositories
+
+## v0.5 — distribution and operational maturity
+- Release/package distribution
+- MCP client onboarding examples
+- Containerization
+- Structured observability
+- Deterministic policy engine
+- Safe repository versioning workflows
 
 ## Principle
-The LLM may help interpret intent. It must not be the authority for metadata validity or publication authorization.
+
+The LLM may help interpret intent. It must not be the authority for metadata validity, package identity, or publication authorization.
