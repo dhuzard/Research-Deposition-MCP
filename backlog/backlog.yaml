@@ -1,0 +1,125 @@
+- acceptance_criteria:
+  - v0.2 package integrity scope is decomposed into executable backlog items.
+  - Child items complete before epic closure.
+  created_at: '2026-09-15T09:03:54Z'
+  dependencies: []
+  description: 'GitHub issue #5. Track v0.2 publication integrity epic for reproducible
+    approval-bound publication packages.'
+  github_issue: 5
+  id: ORCH-001
+  labels:
+  - epic
+  - publication-integrity
+  priority: high
+  status: planned
+  title: v0.2 epic — reproducible, approval-bound publication package
+  updated_at: '2026-09-15T09:03:54Z'
+  version: v0.2
+- acceptance_criteria:
+  - Audit event schema is deterministic and append-only.
+  - Tests cover event creation and tamper-evident ordering where applicable.
+  created_at: '2026-09-15T09:03:54Z'
+  dependencies: []
+  description: 'GitHub issue #9. Define deterministic append-only audit events for
+    deposition operations.'
+  github_issue: 9
+  github_pr: 14
+  github_pr_sync:
+    base_ref: main
+    head_ref: orch-002-audit-events
+    is_draft: false
+    issue: 9
+    last_synced_at: '2026-09-15T09:49:43Z'
+    pr: 14
+    remote_body: 'Backlog id: ORCH-002
+
+      Version: v0.2
+
+      GitHub issue: Refs #9
+
+
+      This pull request is associated with the backlog item above.'
+    remote_state: open
+    remote_title: v0.2 — append-only deposition audit event model
+    repo: dhuzard/Research-Deposition-MCP
+  github_sync:
+    issue: 9
+    last_synced_at: '2026-09-15T10:01:40Z'
+    remote_labels:
+    - audit
+    - provenance
+    remote_state: closed
+    remote_title: v0.2 — append-only deposition audit event model
+    repo: dhuzard/Research-Deposition-MCP
+  id: ORCH-002
+  labels:
+  - audit
+  - provenance
+  priority: high
+  status: completed
+  title: v0.2 — append-only deposition audit event model
+  updated_at: '2026-09-15T10:01:40Z'
+  version: v0.2
+- acceptance_criteria:
+  - Zenodo mapping is verified against remote draft/file state.
+  - Sandbox E2E tests are documented and gated safely.
+  created_at: '2026-09-15T09:03:54Z'
+  dependencies: []
+  description: 'GitHub issue #10. Strengthen Zenodo remote package verification and
+    sandbox E2E coverage.'
+  github_issue: 10
+  id: ORCH-003
+  labels:
+  - zenodo
+  - e2e
+  priority: high
+  status: planned
+  title: v0.2 — expand Zenodo mapping and add sandbox end-to-end tests
+  updated_at: '2026-09-15T09:04:48Z'
+  version: v0.2
+- acceptance_criteria:
+  - Importer architecture is specified without weakening deterministic metadata validation.
+  - RO-Crate, CITATION.cff, ORW, and ISA ingestion are decomposed into separate implementation
+    items.
+  created_at: '2026-09-15T09:03:54Z'
+  dependencies: []
+  description: 'GitHub issue #11. Track v0.3 metadata importer epic.'
+  github_issue: 11
+  id: ORCH-004
+  labels:
+  - metadata
+  - importers
+  priority: medium
+  status: proposed
+  title: v0.3 epic — ingest scientific metadata from RO-Crate, CITATION.cff, ORW and
+    ISA
+  updated_at: '2026-09-15T09:03:54Z'
+  version: v0.3
+- acceptance_criteria:
+  - Manifest hashing opens selected files with no-follow semantics where supported
+    and hashes from the validated descriptor rather than reopening by pathname.
+  - Descriptor-level identity checks verify the hashed file is the same regular file
+    selected during validation.
+  - Intermediate symlink and final symlink rejection behavior remains deterministic
+    and tested.
+  - Regression tests cover symlink/TOCTOU-adjacent cases without adding repository
+    writes or publication capabilities.
+  created_at: '2026-09-15T11:30:31Z'
+  dependencies: []
+  description: Current manifest hashing validates selected files by pathname using
+    lstat/realpath before streaming and final lstat checks. This is acceptable for
+    the current no-write MVP foundation, but before manifests authorize uploads or
+    publication, hashing should operate on a securely opened file descriptor with
+    no-follow protections and descriptor-level identity checks to reduce TOCTOU/symlink
+    race risk.
+  id: ORCH-005
+  labels:
+  - manifest
+  - security
+  - publication-integrity
+  - filesystem
+  priority: high
+  status: proposed
+  title: Harden manifest hashing with descriptor-based no-follow validation
+  updated_at: '2026-09-15T11:30:31Z'
+  version: v0.2
