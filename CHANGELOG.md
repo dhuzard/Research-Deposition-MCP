@@ -21,6 +21,9 @@ The project follows semantic versioning once stable public releases begin. Durin
 - Short-lived signed approval receipts bound to package digest, repository adapter, endpoint, draft ID, and publication-policy version.
 - Pre-publication package re-computation and receipt verification.
 - Package identity and approval-protocol documentation.
+- Repository-independent, append-only audit event schema (v1) with a domain-separated SHA-256 hash chain covering validation, manifest/digest generation, draft and file operations, approval lifecycle, and publication.
+- `AuditLog` application-level recorder with serialized concurrent `record()` calls and an `AuditFileSink` NDJSON persistence layer that validates and refuses to resume a tampered log.
+- Audit event documentation, including tamper-evidence limits.
 
 ### Changed
 
@@ -29,7 +32,7 @@ The project follows semantic versioning once stable public releases begin. Durin
 
 ### Planned
 
-- Audit/provenance event log.
+- Wiring the audit event log into MCP tool handlers and provenance-aware log sinks (signed/externally anchored logs).
 - Stronger Zenodo metadata coverage, remote package verification, and Sandbox E2E tests.
 - Metadata-source adapters for RO-Crate, CITATION.cff, ISA, and ORW.
 

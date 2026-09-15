@@ -87,6 +87,12 @@ Repository-specific field mapping and HTTP behavior belong inside adapter implem
 
 The current interface does not yet prove that the remote repository file set exactly matches the local package manifest. Adapter-level verification/conformance is tracked in #10 and later repository-independence work.
 
+## Audit event log
+
+A repository-independent, append-only audit event model records operation-level activity (validation, manifest/digest generation, draft and file operations, approval lifecycle, publication) as a SHA-256 hash chain, without repository credentials or the approval private key.
+
+See [audit.md](audit.md).
+
 ## Metadata-source adapters
 
 A separate future layer will transform existing scientific metadata sources into the common model:

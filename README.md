@@ -39,7 +39,7 @@ Implemented:
 - approval binding to package digest, repository adapter, endpoint, draft ID, and policy version;
 - publication disabled by default at process level.
 
-Still planned include append-only audit events (#9), full Zenodo remote-package verification and Sandbox E2E coverage (#10), RO-Crate/CITATION.cff/ISA/ORW importers, identifier validation, and additional repository adapters. See [ROADMAP.md](ROADMAP.md) and [BACKLOG.md](BACKLOG.md).
+Still planned include wiring the append-only audit event log (#9) into the MCP tool handlers, full Zenodo remote-package verification and Sandbox E2E coverage (#10), RO-Crate/CITATION.cff/ISA/ORW importers, identifier validation, and additional repository adapters. See [ROADMAP.md](ROADMAP.md) and [BACKLOG.md](BACKLOG.md).
 
 ## MCP tools
 
@@ -203,6 +203,12 @@ The signing command requires a TTY and an exact human-entered confirmation phras
 Any change to metadata, selected file content, selected filenames, repository endpoint, draft ID, or configured policy version invalidates the authorization.
 
 See [docs/approval.md](docs/approval.md) for the complete protocol and its current limitations.
+
+## Audit event log
+
+`src/audit.ts` defines a repository-independent, append-only audit event schema (v1) with a domain-separated SHA-256 hash chain, plus an `AuditFileSink` NDJSON persistence layer (`src/audit-sinks.ts`) that validates any existing log and refuses to resume a tampered one. It records operation-level activity — validation, manifest/digest generation, draft and file operations, approval lifecycle, publication — without repository tokens, the approval private key, or arbitrary payloads.
+
+The chain is tamper-evident, not tamper-proof; see [docs/audit.md](docs/audit.md) for its guarantees and limits (in particular, detecting tail truncation requires an externally held checkpoint hash). This module is not yet wired into the MCP tool handlers.
 
 ## Architecture
 
