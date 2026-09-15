@@ -112,14 +112,18 @@
     publication, hashing should operate on a securely opened file descriptor with
     no-follow protections and descriptor-level identity checks to reduce TOCTOU/symlink
     race risk.
+  github_issue: 16
+  github_sync:
+    issue: 16
+    last_synced_at: '2026-09-15T11:39:42Z'
+    remote_labels: []
+    remote_state: open
+    remote_title: Harden manifest hashing with descriptor-based no-follow validation
+    repo: dhuzard/Research-Deposition-MCP
   id: ORCH-005
-  labels:
-  - manifest
-  - security
-  - publication-integrity
-  - filesystem
+  labels: []
   priority: high
   status: proposed
   title: Harden manifest hashing with descriptor-based no-follow validation
-  updated_at: '2026-09-15T11:30:31Z'
+  updated_at: '2026-09-15T11:39:42Z'
   version: v0.2
