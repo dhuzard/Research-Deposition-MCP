@@ -53,7 +53,7 @@ metadata + selected files
  repository publish
           |
           v
- audit event (tracked for #9)
+ audit event (see audit.md)
 ```
 
 If metadata or any selected file changes after approval, the digest changes and the receipt no longer authorizes publication.
@@ -115,3 +115,9 @@ The current receipt verifies the declared local package. Full adapter-level atte
 Repository access tokens and approval private keys must never be returned by MCP tools or included in user-facing exceptions, test fixtures, committed configuration, or logs.
 
 The operator public key fingerprint is safe to expose and is returned by `deposition_status` when configured.
+
+## Audit log
+
+Operation-level activity can be recorded as an append-only, hash-chained audit event log. The event schema strictly excludes repository tokens, the approval private key, full approval receipts, raw error messages, and local file paths; event content is limited to safe identifiers, digests, and small closed "safe summary" fields.
+
+The audit chain is tamper-evident, not tamper-proof: it detects modification, reordering, and deletion of interior events, but detecting deletion of the log's tail requires comparing against an externally held checkpoint hash. See [audit.md](audit.md) for the full integrity model and its limits.
