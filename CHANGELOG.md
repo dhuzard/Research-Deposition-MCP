@@ -24,6 +24,8 @@ The project follows semantic versioning once stable public releases begin. Durin
 - Repository-independent, append-only audit event schema (v1) with a domain-separated SHA-256 hash chain covering validation, manifest/digest generation, draft and file operations, approval lifecycle, and publication.
 - `AuditLog` application-level recorder with serialized concurrent `record()` calls and an `AuditFileSink` NDJSON persistence layer that validates and refuses to resume a tampered log.
 - Audit event documentation, including tamper-evidence limits.
+- `research-deposition` local operator CLI (`status`, `package check`, `package digest`) that validates a package config and selected files and computes the package digest without any repository read/write.
+- `buildExplicitFileManifest` in `manifest.ts` for literal, non-glob file-selection safety checks (missing files, unsafe paths, symlinks, duplicates) reported as deterministic issues instead of thrown exceptions.
 
 ### Changed
 

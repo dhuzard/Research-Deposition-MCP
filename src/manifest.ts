@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { lstat, readdir } from "node:fs/promises";
 import path from "node:path";
+import type { ValidationIssue } from "./model.js";
 
 export const FILE_MANIFEST_SCHEMA_VERSION = "1" as const;
 
@@ -77,7 +78,13 @@ function hasTraversalSegment(value: string): boolean {
 
 function looksAbsolute(value: string): boolean {
   const normalized = normalizeSlashes(value);
-  return path.posix.isAbsolute(normalized) || /^[A-Za-z]:\//u.test(normalized) || normalized.startsWith("//");
+  return path.posix.isAbsolute(normalized) || /^[A-Za-z]:/u.test(normalized) || normalized.startsWith("//");
+}
+
+function normalizeOperationalPath(value: string): string {
+  let normalized = path.posix.normalize(value.replaceAll("\\", "/"));
+  while (normalized.startsWith("./")) normalized = normalized.slice(2);
+  return normalized;
 }
 
 /**
@@ -255,6 +262,53 @@ async function sha256File(filePath: string): Promise<{ sha256: string; size: num
   return { sha256: hash.digest("hex"), size: after.size };
 }
 
+/**
+ * Explicit selection resolves `sourcePath` with `path.join`, which is plain
+ * string concatenation: it does not notice when a directory *between* the
+ * root and the final file is actually a symlink to somewhere else. Walk each
+ * intermediate directory segment with `lstat` (never `stat`) so a symlinked
+ * intermediate component is rejected deterministically, the same way a
+ * symlinked leaf file already is.
+ */
+async function assertNoSymlinkedIntermediateDirs(absoluteRoot: string, operationalSourcePath: string, canonicalSourcePath: string): Promise<void> {
+  const segments = operationalSourcePath.split("/");
+  segments.pop();
+
+  let current = absoluteRoot;
+  for (const segment of segments) {
+    current = path.join(current, segment);
+
+    let stats;
+    try {
+      stats = await lstat(current);
+    } catch (error) {
+      const err = error as NodeJS.ErrnoException;
+      if (err.code === "ENOENT") {
+        throw new ManifestError("file_missing", `Selected file does not exist: ${canonicalSourcePath}`, canonicalSourcePath);
+      }
+      throw new ManifestError(
+        "file_unavailable",
+        `Selected file could not be inspected (${err.code ?? "unknown_error"}): ${canonicalSourcePath}`,
+        canonicalSourcePath,
+      );
+    }
+    if (stats.isSymbolicLink()) {
+      throw new ManifestError(
+        "symlink_rejected",
+        `Selected file's path passes through a symbolic link: ${canonicalSourcePath}`,
+        canonicalSourcePath,
+      );
+    }
+    if (!stats.isDirectory()) {
+      throw new ManifestError(
+        "not_regular_file",
+        `Selected file's path passes through a non-directory: ${canonicalSourcePath}`,
+        canonicalSourcePath,
+      );
+    }
+  }
+}
+
 function mediaTypeFor(filePath: string): string | undefined {
   return MEDIA_TYPES[path.posix.extname(filePath).toLowerCase()];
 }
@@ -372,4 +426,170 @@ export async function buildFileManifest(rootDir: string, rules: FileSelectionRul
   }
 
   return canonicalizeManifest({ schemaVersion: FILE_MANIFEST_SCHEMA_VERSION, entries });
+}
+
+export interface ExplicitFileEntry {
+  /** Path relative to the declared root, treated literally (not a glob). */
+  sourcePath: string;
+  /** Repository-facing path/name for this exact file. */
+  depositPath: string;
+}
+
+export interface ExplicitManifestOutcome {
+  /** Present only when every entry resolved without issues. */
+  manifest?: FileManifest;
+  issues: ValidationIssue[];
+}
+
+function manifestErrorIssue(error: unknown, issuePath: string): ValidationIssue {
+  if (error instanceof ManifestError) {
+    return { severity: "error", code: error.code, message: error.message, path: issuePath };
+  }
+  const err = error as NodeJS.ErrnoException;
+  const code = err?.code ? `unavailable_${err.code.toLowerCase()}` : "file_unavailable";
+  return { severity: "error", code, message: "Selected file could not be read.", path: issuePath };
+}
+
+/**
+ * Resolve an explicit, literal list of local files (no glob expansion) into a
+ * canonical manifest. Every entry is validated and hashed independently so a
+ * package config can surface all safety issues at once instead of stopping at
+ * the first one.
+ */
+export async function buildExplicitFileManifest(
+  rootDir: string,
+  entries: ExplicitFileEntry[],
+): Promise<ExplicitManifestOutcome> {
+  const absoluteRoot = path.resolve(rootDir);
+  const issues: ValidationIssue[] = [];
+
+  try {
+    const rootStat = await lstat(absoluteRoot);
+    if (rootStat.isSymbolicLink()) {
+      return { issues: [{ severity: "error", code: "symlink_rejected", message: "Package root must not be a symbolic link." }] };
+    }
+    if (!rootStat.isDirectory()) {
+      return { issues: [{ severity: "error", code: "root_not_directory", message: "Package root must be a directory." }] };
+    }
+  } catch (error) {
+    const err = error as NodeJS.ErrnoException;
+    return { issues: [{ severity: "error", code: "root_unavailable", message: `Package root could not be inspected (${err.code ?? "unknown_error"}).` }] };
+  }
+  const resolved: FileManifestEntry[] = [];
+  const seenSource = new Set<string>();
+  const seenDeposit = new Set<string>();
+
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
+    const label = `files[${index}]`;
+
+    let sourcePath: string;
+    let depositPath: string;
+    try {
+      sourcePath = normalizeManifestPath(entry.sourcePath, `${label}.sourcePath`);
+    } catch (error) {
+      issues.push(manifestErrorIssue(error, `${label}.sourcePath`));
+      continue;
+    }
+    try {
+      depositPath = normalizeManifestPath(entry.depositPath, `${label}.depositName`);
+    } catch (error) {
+      issues.push(manifestErrorIssue(error, `${label}.depositName`));
+      continue;
+    }
+
+    const operationalSourcePath = normalizeOperationalPath(entry.sourcePath);
+    const absolutePath = path.join(absoluteRoot, operationalSourcePath);
+    const relativeCheck = path.relative(absoluteRoot, absolutePath);
+    if (relativeCheck === ".." || relativeCheck.startsWith(`..${path.sep}`) || path.isAbsolute(relativeCheck)) {
+      issues.push({
+        severity: "error",
+        code: "path_traversal",
+        message: `${label}.sourcePath escapes the declared root.`,
+        path: `${label}.sourcePath`,
+      });
+      continue;
+    }
+
+    try {
+      await assertNoSymlinkedIntermediateDirs(absoluteRoot, operationalSourcePath, sourcePath);
+    } catch (error) {
+      issues.push(manifestErrorIssue(error, `${label}.sourcePath`));
+      continue;
+    }
+
+    let stats;
+    try {
+      stats = await lstat(absolutePath);
+    } catch (error) {
+      const err = error as NodeJS.ErrnoException;
+      if (err.code === "ENOENT") {
+        issues.push({
+          severity: "error",
+          code: "file_missing",
+          message: `Selected file does not exist: ${sourcePath}`,
+          path: `${label}.sourcePath`,
+        });
+      } else {
+        issues.push({
+          severity: "error",
+          code: "file_unavailable",
+          message: `Selected file could not be inspected (${err.code ?? "unknown_error"}): ${sourcePath}`,
+          path: `${label}.sourcePath`,
+        });
+      }
+      continue;
+    }
+    if (stats.isSymbolicLink()) {
+      issues.push({
+        severity: "error",
+        code: "symlink_rejected",
+        message: `Selected file must not be a symbolic link: ${sourcePath}`,
+        path: `${label}.sourcePath`,
+      });
+      continue;
+    }
+    if (!stats.isFile()) {
+      issues.push({
+        severity: "error",
+        code: "not_regular_file",
+        message: `Selected entry must be a regular file: ${sourcePath}`,
+        path: `${label}.sourcePath`,
+      });
+      continue;
+    }
+    if (seenSource.has(sourcePath)) {
+      issues.push({
+        severity: "error",
+        code: "duplicate_source_path",
+        message: `Duplicate normalized source path: ${sourcePath}`,
+        path: `${label}.sourcePath`,
+      });
+      continue;
+    }
+    if (seenDeposit.has(depositPath)) {
+      issues.push({
+        severity: "error",
+        code: "duplicate_deposit_path",
+        message: `Duplicate normalized deposit path: ${depositPath}`,
+        path: `${label}.depositName`,
+      });
+      continue;
+    }
+
+    try {
+      const { sha256, size } = await sha256File(absolutePath);
+      seenSource.add(sourcePath);
+      seenDeposit.add(depositPath);
+      const mediaType = mediaTypeFor(depositPath);
+      resolved.push({ sourcePath, depositPath, size, sha256, ...(mediaType ? { mediaType } : {}) });
+    } catch (error) {
+      issues.push(manifestErrorIssue(error, `${label}.sourcePath`));
+    }
+  }
+
+  if (issues.length > 0) return { issues };
+
+  resolved.sort((a, b) => compareCodeUnits(a.depositPath, b.depositPath) || compareCodeUnits(a.sourcePath, b.sourcePath));
+  return { manifest: { schemaVersion: FILE_MANIFEST_SCHEMA_VERSION, entries: resolved }, issues: [] };
 }

@@ -98,6 +98,18 @@ npm start
 
 Do not commit tokens or put them into MCP configuration files that will be version-controlled.
 
+## Local CLI
+
+`research-deposition` is a local, read-only operator CLI. It validates a package config and its selected files and computes the deterministic package digest; it never talks to a repository and never writes anything.
+
+```bash
+research-deposition status [--json]
+research-deposition package check <config.json> [--json]
+research-deposition package digest <config.json> [--json]
+```
+
+A package config is JSON with `schemaVersion: "1"`, repository-independent `metadata`, and an explicit `files` list of `{ "sourcePath": "...", "depositName": "..." }` entries. `sourcePath` is resolved relative to the directory containing the config file (the implicit root) and is treated as a literal file path, not a glob. `--json` emits exactly one JSON document to stdout, including on validation failure; without it, output is human-readable. Exit codes: `0` for a valid (or warning-only) result, `1` for an invalid config/metadata/file or a runtime safety rejection, `2` for usage errors. Tokens are never accepted as CLI flags and are never logged; `status` only reports whether one is configured via `ZENODO_API_KEY`.
+
 ## MCP client example
 
 ```json
