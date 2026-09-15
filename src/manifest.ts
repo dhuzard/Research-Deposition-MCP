@@ -1,265 +1,375 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { lstat, realpath } from "node:fs/promises";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { lstat, readdir } from "node:fs/promises";
+import path from "node:path";
 
-export interface PathNormalizationSuccess {
-  ok: true;
-  value: string;
-}
-
-export interface PathNormalizationFailure {
-  ok: false;
-  code: string;
-  message: string;
-}
-
-export type PathNormalizationResult = PathNormalizationSuccess | PathNormalizationFailure;
-
-function fail(code: string, message: string): PathNormalizationFailure {
-  return { ok: false, code, message };
-}
-
-const WINDOWS_DRIVE_RE = /^[a-zA-Z]:/;
-
-/**
- * Normalizes a portable, repository-independent relative file path.
- *
- * Rejects anything that could escape a package root or behave differently
- * across operating systems: absolute paths (POSIX or Windows), Windows
- * drive-letter paths, UNC paths, and any ".." traversal segment. Repeated
- * separators and "." segments are collapsed. The result is NFC-normalized
- * and uses "/" as the only separator.
- */
-export function normalizePortablePath(raw: string): PathNormalizationResult {
-  if (typeof raw !== "string" || raw.length === 0) {
-    return fail("empty_path", "Path must be a non-empty string.");
-  }
-  if (raw.includes("\0")) {
-    return fail("nul_byte", "Path must not contain NUL bytes.");
-  }
-
-  const normalized = raw.normalize("NFC");
-
-  if (normalized.startsWith("\\\\") || normalized.startsWith("//")) {
-    return fail("unc_path", "UNC paths are not permitted.");
-  }
-  if (WINDOWS_DRIVE_RE.test(normalized)) {
-    return fail("windows_absolute", "Windows drive-letter absolute paths are not permitted.");
-  }
-  if (normalized.startsWith("/") || normalized.startsWith("\\")) {
-    return fail("absolute_path", "Absolute paths are not permitted.");
-  }
-  if (normalized.includes("\\")) {
-    return fail("backslash_separator", "Backslash path separators are not permitted; use POSIX-style forward slashes.");
-  }
-
-  const segments: string[] = [];
-  for (const segment of normalized.split("/")) {
-    if (segment === "" || segment === ".") continue;
-    if (segment === "..") {
-      return fail("path_traversal", "Path segments of '..' are not permitted.");
-    }
-    segments.push(segment);
-  }
-
-  if (segments.length === 0) {
-    return fail("empty_path", "Path must resolve to at least one path segment.");
-  }
-
-  return { ok: true, value: segments.join("/") };
-}
-
-export interface PackageFileInput {
-  sourcePath: string;
-  depositName: string;
-}
+export const FILE_MANIFEST_SCHEMA_VERSION = "1" as const;
 
 export interface FileManifestEntry {
+  /** POSIX/NFC-normalized path relative to the declared local root. */
   sourcePath: string;
-  depositName: string;
+  /** POSIX/NFC-normalized path/name to use in the target repository. */
+  depositPath: string;
   size: number;
   sha256: string;
+  mediaType?: string;
 }
 
-export interface ManifestIssue {
-  code: string;
-  message: string;
-  sourcePath?: string;
-  depositName?: string;
+export interface FileManifest {
+  schemaVersion: typeof FILE_MANIFEST_SCHEMA_VERSION;
+  entries: FileManifestEntry[];
 }
 
-export interface ManifestSuccess {
-  ok: true;
-  manifest: FileManifestEntry[];
-  issues: [];
+export interface FileSelectionRules {
+  /** Explicit repository-relative glob patterns. At least one is required. */
+  include: string[];
+  /** Exclusion globs take precedence over inclusion globs. */
+  exclude?: string[];
+  /** Optional exact source-path to repository-path renames. */
+  destinations?: Record<string, string>;
 }
 
-export interface ManifestFailure {
-  ok: false;
-  manifest: [];
-  issues: ManifestIssue[];
+export class ManifestError extends Error {
+  constructor(
+    public readonly code: string,
+    message: string,
+    public readonly manifestPath?: string,
+  ) {
+    super(message);
+    this.name = "ManifestError";
+  }
 }
 
-export type ManifestResult = ManifestSuccess | ManifestFailure;
+interface DiscoveredFile {
+  /** Canonical path used for matching and serialization. */
+  sourcePath: string;
+  /** Raw machine-local path used only to open/hash the file. */
+  absolutePath: string;
+}
 
-async function hashFile(absPath: string): Promise<{ size: number; sha256: string }> {
-  const hash = createHash("sha256");
-  let size = 0;
-  await new Promise<void>((resolvePromise, rejectPromise) => {
-    const stream = createReadStream(absPath);
-    stream.on("data", (chunk: string | Buffer) => {
-      const buf = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
-      size += buf.length;
-      hash.update(buf);
-    });
-    stream.on("error", rejectPromise);
-    stream.on("end", () => resolvePromise());
-  });
-  return { size, sha256: hash.digest("hex") };
+const MEDIA_TYPES: Record<string, string> = {
+  ".csv": "text/csv",
+  ".json": "application/json",
+  ".jsonld": "application/ld+json",
+  ".md": "text/markdown",
+  ".pdf": "application/pdf",
+  ".tsv": "text/tab-separated-values",
+  ".txt": "text/plain",
+  ".xml": "application/xml",
+  ".yaml": "application/yaml",
+  ".yml": "application/yaml",
+  ".zip": "application/zip",
+};
+
+function compareCodeUnits(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+function normalizeSlashes(value: string): string {
+  // NFC avoids machine/filesystem-dependent composed-vs-decomposed Unicode
+  // representations changing the canonical manifest.
+  return value.replaceAll("\\", "/").normalize("NFC");
+}
+
+function hasTraversalSegment(value: string): boolean {
+  return normalizeSlashes(value).split("/").some((part) => part === "..");
+}
+
+function looksAbsolute(value: string): boolean {
+  const normalized = normalizeSlashes(value);
+  return path.posix.isAbsolute(normalized) || /^[A-Za-z]:\//u.test(normalized) || normalized.startsWith("//");
 }
 
 /**
- * Builds a deterministic file manifest for a package: normalized source
- * path, deposit-side name, size, and SHA-256 digest, sorted by deposit
- * name then source path. Performs no repository network access and uses
- * no credentials.
- *
- * Rejects (as issues, never throwing): absolute or traversal-unsafe paths,
- * duplicate normalized source paths or deposit names, missing files,
- * non-regular files (directories, sockets, etc.), and symlinks (final or
- * intermediate path components). If any issue is found, the manifest is
- * empty; callers should surface `issues` to the caller instead of a
- * partial manifest.
+ * Normalize a path that must remain relative to the declared publication root.
+ * Any explicit `..` segment is rejected rather than silently normalized away.
  */
-export async function buildManifest(rootDir: string, files: readonly PackageFileInput[]): Promise<ManifestResult> {
-  const issues: ManifestIssue[] = [];
-  const resolvedRoot = resolve(rootDir);
-
-  const normalizedEntries: { sourcePath: string; depositName: string }[] = [];
-  const seenSource = new Set<string>();
-  const seenDeposit = new Set<string>();
-
-  for (const file of files) {
-    const sourceResult = normalizePortablePath(file.sourcePath);
-    if (!sourceResult.ok) {
-      issues.push({
-        code: `source_${sourceResult.code}`,
-        message: `Invalid sourcePath "${file.sourcePath}": ${sourceResult.message}`,
-        sourcePath: file.sourcePath,
-      });
-      continue;
-    }
-    const depositResult = normalizePortablePath(file.depositName);
-    if (!depositResult.ok) {
-      issues.push({
-        code: `deposit_${depositResult.code}`,
-        message: `Invalid depositName "${file.depositName}": ${depositResult.message}`,
-        depositName: file.depositName,
-      });
-      continue;
-    }
-    if (seenSource.has(sourceResult.value)) {
-      issues.push({
-        code: "duplicate_source_path",
-        message: `Duplicate normalized sourcePath: ${sourceResult.value}`,
-        sourcePath: sourceResult.value,
-      });
-      continue;
-    }
-    if (seenDeposit.has(depositResult.value)) {
-      issues.push({
-        code: "duplicate_deposit_name",
-        message: `Duplicate normalized depositName: ${depositResult.value}`,
-        depositName: depositResult.value,
-      });
-      continue;
-    }
-    seenSource.add(sourceResult.value);
-    seenDeposit.add(depositResult.value);
-    normalizedEntries.push({ sourcePath: sourceResult.value, depositName: depositResult.value });
+export function normalizeManifestPath(value: string, label = "path"): string {
+  if (value.length === 0) {
+    throw new ManifestError("empty_path", `${label} must not be empty.`);
+  }
+  if (value.includes("\0")) {
+    throw new ManifestError("invalid_path", `${label} contains a NUL byte.`, value);
+  }
+  if (looksAbsolute(value)) {
+    throw new ManifestError("absolute_path", `${label} must be relative to the declared root.`, value);
+  }
+  if (hasTraversalSegment(value)) {
+    throw new ManifestError("path_traversal", `${label} must not contain '..' path segments.`, value);
   }
 
-  if (issues.length > 0) {
-    return { ok: false, manifest: [], issues };
+  let normalized = path.posix.normalize(normalizeSlashes(value));
+  while (normalized.startsWith("./")) normalized = normalized.slice(2);
+
+  if (normalized === "." || normalized === "") {
+    throw new ManifestError("empty_path", `${label} must resolve to a file path.`, value);
+  }
+  if (normalized.startsWith("../") || normalized === "..") {
+    throw new ManifestError("path_traversal", `${label} escapes the declared root.`, value);
+  }
+  return normalized;
+}
+
+function normalizePattern(value: string, label: string): string {
+  // The same path-safety rules apply to patterns. Wildcards are path-segment
+  // syntax, not an exception to the root boundary.
+  return normalizeManifestPath(value, label);
+}
+
+/**
+ * Supported glob subset: `*`, `?`, and `**`. Character classes and brace
+ * expansion are deliberately not supported so matching remains small and
+ * independently auditable.
+ */
+function globToRegExp(pattern: string): RegExp {
+  let source = "^";
+
+  for (let i = 0; i < pattern.length; i += 1) {
+    const char = pattern[i];
+
+    if (char === "*") {
+      if (pattern[i + 1] === "*") {
+        if (pattern[i + 2] === "/") {
+          source += "(?:.*/)?";
+          i += 2;
+        } else {
+          source += ".*";
+          i += 1;
+        }
+      } else {
+        source += "[^/]*";
+      }
+      continue;
+    }
+
+    if (char === "?") {
+      source += "[^/]";
+      continue;
+    }
+
+    source += char.replace(/[|\\{}()[\]^$+?.]/gu, "\\$&");
+  }
+
+  source += "$";
+  return new RegExp(source, "u");
+}
+
+function compilePatterns(patterns: string[], label: string): RegExp[] {
+  return patterns.map((pattern, index) => globToRegExp(normalizePattern(pattern, `${label}[${index}]`)));
+}
+
+function matchesAny(value: string, patterns: RegExp[]): boolean {
+  return patterns.some((pattern) => pattern.test(value));
+}
+
+async function walkFiles(rootDir: string): Promise<DiscoveredFile[]> {
+  const rootStat = await lstat(rootDir).catch((error: NodeJS.ErrnoException) => {
+    throw new ManifestError("root_unavailable", `Cannot inspect manifest root: ${error.message}`, rootDir);
+  });
+
+  if (rootStat.isSymbolicLink()) {
+    throw new ManifestError("symlink_rejected", "The manifest root must not be a symbolic link.", rootDir);
+  }
+  if (!rootStat.isDirectory()) {
+    throw new ManifestError("root_not_directory", "The manifest root must be a directory.", rootDir);
+  }
+
+  const files: DiscoveredFile[] = [];
+  const seenCanonicalPaths = new Set<string>();
+
+  async function walk(absoluteDir: string, canonicalDir: string): Promise<void> {
+    const entries = await readdir(absoluteDir, { withFileTypes: true });
+    entries.sort((a, b) => compareCodeUnits(a.name, b.name));
+
+    for (const entry of entries) {
+      // Keep the raw entry name for local filesystem access, but derive a
+      // normalized path for matching and the publication contract.
+      const canonicalPath = normalizeManifestPath(
+        canonicalDir ? `${canonicalDir}/${entry.name}` : entry.name,
+        "filesystem path",
+      );
+      const absolutePath = path.join(absoluteDir, entry.name);
+
+      if (seenCanonicalPaths.has(canonicalPath)) {
+        throw new ManifestError(
+          "duplicate_source_path",
+          `Multiple filesystem entries normalize to the same manifest path: ${canonicalPath}`,
+          canonicalPath,
+        );
+      }
+      seenCanonicalPaths.add(canonicalPath);
+
+      if (entry.isSymbolicLink()) {
+        throw new ManifestError(
+          "symlink_rejected",
+          "Symbolic links are not allowed anywhere under a manifest root in schema v1.",
+          canonicalPath,
+        );
+      }
+      if (entry.isDirectory()) {
+        await walk(absolutePath, canonicalPath);
+        continue;
+      }
+      if (entry.isFile()) {
+        files.push({ sourcePath: canonicalPath, absolutePath });
+        continue;
+      }
+
+      throw new ManifestError(
+        "unsupported_file_type",
+        "Only regular files and directories are allowed under a manifest root in schema v1.",
+        canonicalPath,
+      );
+    }
+  }
+
+  await walk(rootDir, "");
+  return files;
+}
+
+async function sha256File(filePath: string): Promise<{ sha256: string; size: number }> {
+  const before = await lstat(filePath);
+  if (before.isSymbolicLink()) {
+    throw new ManifestError("symlink_rejected", "Selected files must not be symbolic links.", filePath);
+  }
+  if (!before.isFile()) {
+    throw new ManifestError("not_regular_file", "Selected manifest entries must be regular files.", filePath);
+  }
+
+  const hash = createHash("sha256");
+  await new Promise<void>((resolve, reject) => {
+    const stream = createReadStream(filePath);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("error", reject);
+    stream.on("end", resolve);
+  });
+
+  const after = await lstat(filePath);
+  if (!after.isFile() || after.isSymbolicLink()) {
+    throw new ManifestError("file_changed_during_hash", "File type changed while hashing.", filePath);
+  }
+  if (before.size !== after.size || before.mtimeMs !== after.mtimeMs) {
+    throw new ManifestError("file_changed_during_hash", "File changed while its manifest hash was being computed.", filePath);
+  }
+
+  return { sha256: hash.digest("hex"), size: after.size };
+}
+
+function mediaTypeFor(filePath: string): string | undefined {
+  return MEDIA_TYPES[path.posix.extname(filePath).toLowerCase()];
+}
+
+function canonicalEntry(entry: FileManifestEntry): FileManifestEntry {
+  const sourcePath = normalizeManifestPath(entry.sourcePath, "manifest sourcePath");
+  const depositPath = normalizeManifestPath(entry.depositPath, "manifest depositPath");
+
+  if (!Number.isSafeInteger(entry.size) || entry.size < 0) {
+    throw new ManifestError("invalid_size", `Invalid byte size for ${sourcePath}.`, sourcePath);
+  }
+  if (!/^[a-f0-9]{64}$/u.test(entry.sha256)) {
+    throw new ManifestError("invalid_sha256", `Invalid SHA-256 digest for ${sourcePath}.`, sourcePath);
+  }
+
+  return {
+    sourcePath,
+    depositPath,
+    size: entry.size,
+    sha256: entry.sha256,
+    ...(entry.mediaType ? { mediaType: entry.mediaType } : {}),
+  };
+}
+
+/** Validate, normalize, and deterministically order a manifest. */
+export function canonicalizeManifest(manifest: FileManifest): FileManifest {
+  if (manifest.schemaVersion !== FILE_MANIFEST_SCHEMA_VERSION) {
+    throw new ManifestError("unsupported_manifest_schema", `Unsupported file manifest schema: ${manifest.schemaVersion}`);
+  }
+
+  const entries = manifest.entries.map(canonicalEntry);
+  entries.sort((a, b) => compareCodeUnits(a.depositPath, b.depositPath) || compareCodeUnits(a.sourcePath, b.sourcePath));
+
+  const sources = new Set<string>();
+  const destinations = new Set<string>();
+  for (const entry of entries) {
+    if (sources.has(entry.sourcePath)) {
+      throw new ManifestError("duplicate_source_path", `Duplicate normalized source path: ${entry.sourcePath}`, entry.sourcePath);
+    }
+    if (destinations.has(entry.depositPath)) {
+      throw new ManifestError("duplicate_deposit_path", `Duplicate normalized deposit path: ${entry.depositPath}`, entry.depositPath);
+    }
+    sources.add(entry.sourcePath);
+    destinations.add(entry.depositPath);
+  }
+
+  return { schemaVersion: FILE_MANIFEST_SCHEMA_VERSION, entries };
+}
+
+/** Byte-stable JSON representation used by the next publication-digest layer. */
+export function serializeManifest(manifest: FileManifest): string {
+  return `${JSON.stringify(canonicalizeManifest(manifest))}\n`;
+}
+
+/**
+ * Build the repository-independent file manifest for an explicit selection.
+ *
+ * Absolute local paths are operational inputs only; they are never serialized
+ * into the manifest. `exclude` always wins over `include`.
+ */
+export async function buildFileManifest(rootDir: string, rules: FileSelectionRules): Promise<FileManifest> {
+  if (rules.include.length === 0) {
+    throw new ManifestError("missing_include_rules", "At least one explicit include pattern is required.");
+  }
+
+  const absoluteRoot = path.resolve(rootDir);
+  const include = compilePatterns(rules.include, "include");
+  const exclude = compilePatterns(rules.exclude ?? [], "exclude");
+
+  const destinationMap = new Map<string, string>();
+  for (const [source, destination] of Object.entries(rules.destinations ?? {})) {
+    const normalizedSource = normalizeManifestPath(source, "destination source");
+    const normalizedDestination = normalizeManifestPath(destination, "destination path");
+    if (destinationMap.has(normalizedSource)) {
+      throw new ManifestError("duplicate_source_path", `Duplicate normalized destination source: ${normalizedSource}`, normalizedSource);
+    }
+    destinationMap.set(normalizedSource, normalizedDestination);
+  }
+
+  const discovered = await walkFiles(absoluteRoot);
+  const selected = discovered.filter(
+    (candidate) => matchesAny(candidate.sourcePath, include) && !matchesAny(candidate.sourcePath, exclude),
+  );
+  selected.sort((a, b) => compareCodeUnits(a.sourcePath, b.sourcePath));
+  const selectedSet = new Set(selected.map((candidate) => candidate.sourcePath));
+
+  for (const source of destinationMap.keys()) {
+    if (!selectedSet.has(source)) {
+      throw new ManifestError(
+        "destination_source_not_selected",
+        `Destination mapping refers to a file that is not selected: ${source}`,
+        source,
+      );
+    }
   }
 
   const entries: FileManifestEntry[] = [];
-
-  for (const entry of normalizedEntries) {
-    const absPath = resolve(resolvedRoot, entry.sourcePath);
-    const rootRelativePath = relative(resolvedRoot, absPath);
-    if (rootRelativePath === "" || rootRelativePath === ".." || rootRelativePath.startsWith(`..${sep}`) || isAbsolute(rootRelativePath)) {
-      issues.push({
-        code: "path_escapes_root",
-        message: `sourcePath resolves outside the package root: ${entry.sourcePath}`,
-        sourcePath: entry.sourcePath,
-      });
-      continue;
+  for (const selectedFile of selected) {
+    const { sourcePath, absolutePath } = selectedFile;
+    const relativeCheck = path.relative(absoluteRoot, absolutePath);
+    if (relativeCheck === ".." || relativeCheck.startsWith(`..${path.sep}`) || path.isAbsolute(relativeCheck)) {
+      throw new ManifestError("path_traversal", `Selected file escapes the declared root: ${sourcePath}`, sourcePath);
     }
 
-    let before;
-    try {
-      before = await lstat(absPath);
-    } catch {
-      issues.push({ code: "missing_file", message: `File not found: ${entry.sourcePath}`, sourcePath: entry.sourcePath });
-      continue;
-    }
-
-    if (before.isSymbolicLink()) {
-      issues.push({ code: "symlink_rejected", message: `Symlinks are not permitted: ${entry.sourcePath}`, sourcePath: entry.sourcePath });
-      continue;
-    }
-    if (!before.isFile()) {
-      issues.push({ code: "not_a_regular_file", message: `Not a regular file: ${entry.sourcePath}`, sourcePath: entry.sourcePath });
-      continue;
-    }
-
-    // Guards against symlinked intermediate directories: if any ancestor
-    // component is a symlink, the real path will differ from absPath.
-    let real: string;
-    try {
-      real = await realpath(absPath);
-    } catch {
-      issues.push({ code: "missing_file", message: `File not found: ${entry.sourcePath}`, sourcePath: entry.sourcePath });
-      continue;
-    }
-    if (resolve(real) !== absPath) {
-      issues.push({ code: "symlink_rejected", message: `Path contains a symlinked component: ${entry.sourcePath}`, sourcePath: entry.sourcePath });
-      continue;
-    }
-
-    let hashed: { size: number; sha256: string };
-    try {
-      hashed = await hashFile(absPath);
-    } catch {
-      issues.push({ code: "read_error", message: `Failed to read file: ${entry.sourcePath}`, sourcePath: entry.sourcePath });
-      continue;
-    }
-
-    let after;
-    try {
-      after = await lstat(absPath);
-    } catch {
-      issues.push({ code: "file_changed", message: `File disappeared while hashing: ${entry.sourcePath}`, sourcePath: entry.sourcePath });
-      continue;
-    }
-    if (after.isSymbolicLink() || !after.isFile() || after.size !== hashed.size || after.mtimeMs !== before.mtimeMs || after.ino !== before.ino) {
-      issues.push({ code: "file_changed", message: `File changed while hashing: ${entry.sourcePath}`, sourcePath: entry.sourcePath });
-      continue;
-    }
-
-    entries.push({ sourcePath: entry.sourcePath, depositName: entry.depositName, size: hashed.size, sha256: hashed.sha256 });
+    const { sha256, size } = await sha256File(absolutePath);
+    const depositPath = destinationMap.get(sourcePath) ?? sourcePath;
+    const mediaType = mediaTypeFor(depositPath);
+    entries.push({
+      sourcePath,
+      depositPath,
+      size,
+      sha256,
+      ...(mediaType ? { mediaType } : {}),
+    });
   }
 
-  if (issues.length > 0) {
-    return { ok: false, manifest: [], issues };
-  }
-
-  entries.sort((a, b) => {
-    if (a.depositName !== b.depositName) return a.depositName < b.depositName ? -1 : 1;
-    return a.sourcePath < b.sourcePath ? -1 : a.sourcePath > b.sourcePath ? 1 : 0;
-  });
-
-  return { ok: true, manifest: entries, issues: [] };
+  return canonicalizeManifest({ schemaVersion: FILE_MANIFEST_SCHEMA_VERSION, entries });
 }

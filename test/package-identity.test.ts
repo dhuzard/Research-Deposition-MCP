@@ -1,166 +1,167 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { assemblePackage, computePackageDigest } from "../src/package-identity.js";
-import type { FileManifestEntry } from "../src/manifest.js";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import type { FileManifest } from "../src/manifest.js";
+import {
+  buildPublicationIdentity,
+  canonicalizeResearchDeposit,
+  createPublicationIdentity,
+  PackageIdentityError,
+  serializeCanonicalMetadata,
+} from "../src/package-identity.js";
 
-async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
-  const dir = await mkdtemp(join(tmpdir(), "rdmcp-identity-"));
-  try {
-    return await fn(dir);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-}
-
-const metadata = {
-  title: "Example dataset",
-  description: "A sufficiently descriptive test research dataset.",
-  resourceType: "dataset" as const,
-  creators: [{ name: "Doe, Jane" }],
-  keywords: [] as string[],
-  relatedIdentifiers: [] as unknown[],
+const manifest: FileManifest = {
+  schemaVersion: "1",
+  entries: [
+    {
+      sourcePath: "data/a.csv",
+      depositPath: "data/a.csv",
+      size: 3,
+      sha256: "a".repeat(64),
+      mediaType: "text/csv",
+    },
+    {
+      sourcePath: "notes.md",
+      depositPath: "docs/notes.md",
+      size: 4,
+      sha256: "b".repeat(64),
+      mediaType: "text/markdown",
+    },
+  ],
 };
 
-test("computePackageDigest is deterministic for identical inputs", () => {
-  const manifest: FileManifestEntry[] = [
-    { sourcePath: "a.txt", depositName: "a.txt", size: 5, sha256: "abc123" },
-  ];
-  const first = computePackageDigest("1", metadata, manifest);
-  const second = computePackageDigest("1", metadata, manifest);
-  assert.equal(first, second);
-  assert.match(first, /^sha256:[0-9a-f]{64}$/);
+function metadata() {
+  return {
+    resourceType: "dataset",
+    title: "Cafe\u0301 dataset",
+    description: "Behavioral data for package identity testing.",
+    creators: [
+      {
+        orcid: "0000-0002-1825-0097",
+        affiliation: "Institut E\u0301xample",
+        name: "Huzard, Damien",
+      },
+      { name: "Doe, Jane" },
+    ],
+    keywords: ["zeta", "FAIR", "FAIR"],
+    license: "cc-by-4.0",
+    version: "1.0.0",
+    publicationDate: "2026-09-14",
+    relatedIdentifiers: [
+      { relation: "isSupplementTo", identifier: "10.1/b" },
+      { resourceType: "dataset", identifier: "10.1/a", relation: "isDerivedFrom" },
+      { resourceType: "dataset", identifier: "10.1/a", relation: "isDerivedFrom" },
+    ],
+    notes: "",
+  } as const;
+}
+
+const GOLDEN_METADATA = '{"creators":[{"affiliation":"Institut Éxample","name":"Huzard, Damien","orcid":"0000-0002-1825-0097"},{"name":"Doe, Jane"}],"description":"Behavioral data for package identity testing.","keywords":["FAIR","zeta"],"license":"cc-by-4.0","notes":"","publicationDate":"2026-09-14","relatedIdentifiers":[{"identifier":"10.1/a","relation":"isDerivedFrom","resourceType":"dataset"},{"identifier":"10.1/b","relation":"isSupplementTo"}],"resourceType":"dataset","schemaVersion":"1","title":"Café dataset","version":"1.0.0"}\n';
+
+const GOLDEN_PACKAGE = '{"manifest":{"entries":[{"depositPath":"data/a.csv","mediaType":"text/csv","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size":3,"sourcePath":"data/a.csv"},{"depositPath":"docs/notes.md","mediaType":"text/markdown","sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","size":4,"sourcePath":"notes.md"}],"schemaVersion":"1"},"metadata":{"creators":[{"affiliation":"Institut Éxample","name":"Huzard, Damien","orcid":"0000-0002-1825-0097"},{"name":"Doe, Jane"}],"description":"Behavioral data for package identity testing.","keywords":["FAIR","zeta"],"license":"cc-by-4.0","notes":"","publicationDate":"2026-09-14","relatedIdentifiers":[{"identifier":"10.1/a","relation":"isDerivedFrom","resourceType":"dataset"},{"identifier":"10.1/b","relation":"isSupplementTo"}],"resourceType":"dataset","schemaVersion":"1","title":"Café dataset","version":"1.0.0"},"schemaVersion":"1"}\n';
+
+const GOLDEN_DIGEST = "sha256:5c3e2cdaf80417a59bba3b209b1f80cfb94a51f5b79277821ab6d41bbfa06092";
+
+test("golden canonical metadata and package digest are stable", () => {
+  const canonical = canonicalizeResearchDeposit(metadata());
+  assert.equal(serializeCanonicalMetadata(canonical.metadata), GOLDEN_METADATA);
+
+  const identity = createPublicationIdentity(metadata(), manifest);
+  assert.equal(identity.canonical, GOLDEN_PACKAGE);
+  assert.equal(identity.digest, GOLDEN_DIGEST);
 });
 
-test("computePackageDigest is independent of object key ordering", () => {
-  const manifest: FileManifestEntry[] = [
-    { sourcePath: "a.txt", depositName: "a.txt", size: 5, sha256: "abc123" },
-  ];
-  const reorderedMetadata = {
-    keywords: [] as string[],
-    relatedIdentifiers: [] as unknown[],
-    description: metadata.description,
-    creators: metadata.creators,
-    resourceType: metadata.resourceType,
-    title: metadata.title,
+test("object insertion order and unknown operational fields do not affect identity", () => {
+  const one = createPublicationIdentity({ ...metadata(), localAbsolutePath: "/machine/a/project" }, manifest);
+  const m = metadata();
+  const reordered = {
+    notes: m.notes,
+    relatedIdentifiers: m.relatedIdentifiers,
+    publicationDate: m.publicationDate,
+    version: m.version,
+    license: m.license,
+    keywords: m.keywords,
+    creators: m.creators,
+    description: m.description,
+    title: m.title,
+    resourceType: m.resourceType,
+    localAbsolutePath: "/different/machine/project",
   };
-  const a = computePackageDigest("1", metadata, manifest);
-  const b = computePackageDigest("1", reorderedMetadata, manifest);
-  assert.equal(a, b);
+  const two = createPublicationIdentity(reordered, manifest);
+  assert.equal(one.digest, two.digest);
+  assert.equal(one.canonical, two.canonical);
 });
 
-test("computePackageDigest changes when metadata changes", () => {
-  const manifest: FileManifestEntry[] = [
-    { sourcePath: "a.txt", depositName: "a.txt", size: 5, sha256: "abc123" },
-  ];
-  const a = computePackageDigest("1", metadata, manifest);
-  const b = computePackageDigest("1", { ...metadata, title: "A different title" }, manifest);
-  assert.notEqual(a, b);
+test("identical selected content in different absolute roots produces the same digest", async () => {
+  const firstRoot = await mkdtemp(path.join(os.tmpdir(), "rdm-package-a-"));
+  const secondRoot = await mkdtemp(path.join(os.tmpdir(), "rdm-package-b-"));
+  try {
+    for (const root of [firstRoot, secondRoot]) {
+      await mkdir(path.join(root, "data"), { recursive: true });
+      await writeFile(path.join(root, "data", "a.csv"), "a,b\n1,2\n");
+      await writeFile(path.join(root, "README.md"), "same package\n");
+    }
+    const rules = { include: ["data/**", "README.md"] };
+    const first = await buildPublicationIdentity(metadata(), firstRoot, rules);
+    const second = await buildPublicationIdentity(metadata(), secondRoot, rules);
+    assert.notEqual(firstRoot, secondRoot);
+    assert.equal(first.digest, second.digest);
+    assert.equal(first.canonical, second.canonical);
+    assert.ok(!first.canonical.includes(firstRoot));
+    assert.ok(!second.canonical.includes(secondRoot));
+  } finally {
+    await rm(firstRoot, { recursive: true, force: true });
+    await rm(secondRoot, { recursive: true, force: true });
+  }
 });
 
-test("computePackageDigest changes when manifest content changes", () => {
-  const manifestA: FileManifestEntry[] = [
-    { sourcePath: "a.txt", depositName: "a.txt", size: 5, sha256: "abc123" },
-  ];
-  const manifestB: FileManifestEntry[] = [
-    { sourcePath: "a.txt", depositName: "a.txt", size: 5, sha256: "def456" },
-  ];
-  const a = computePackageDigest("1", metadata, manifestA);
-  const b = computePackageDigest("1", metadata, manifestB);
-  assert.notEqual(a, b);
+test("scientifically relevant metadata mutation changes the digest", () => {
+  const baseline = createPublicationIdentity(metadata(), manifest).digest;
+  const changed = createPublicationIdentity({ ...metadata(), description: "Different scientific description." }, manifest).digest;
+  assert.notEqual(baseline, changed);
 });
 
-test("computePackageDigest changes when schemaVersion changes", () => {
-  const manifest: FileManifestEntry[] = [
-    { sourcePath: "a.txt", depositName: "a.txt", size: 5, sha256: "abc123" },
-  ];
-  const a = computePackageDigest("1", metadata, manifest);
-  const b = computePackageDigest("2", metadata, manifest);
-  assert.notEqual(a, b);
+test("creator order is preserved and affects the digest", () => {
+  const m = metadata();
+  const baseline = createPublicationIdentity(m, manifest).digest;
+  const changed = createPublicationIdentity({ ...m, creators: [...m.creators].reverse() }, manifest).digest;
+  assert.notEqual(baseline, changed);
 });
 
-test("assemblePackage produces the same digest regardless of the package root path", async () => {
-  await withTempDir(async (dirA) => {
-    await withTempDir(async (dirB) => {
-      await mkdir(join(dirA, "data"));
-      await mkdir(join(dirB, "data"));
-      await writeFile(join(dirA, "data", "readings.csv"), "x,y\n1,2\n");
-      await writeFile(join(dirB, "data", "readings.csv"), "x,y\n1,2\n");
-
-      const files = [{ sourcePath: "data/readings.csv", depositName: "readings.csv" }];
-      const resultA = await assemblePackage(dirA, "1", metadata, files);
-      const resultB = await assemblePackage(dirB, "1", metadata, files);
-
-      assert.equal(resultA.ok, true);
-      assert.equal(resultB.ok, true);
-      if (!resultA.ok || !resultB.ok) return;
-      assert.equal(resultA.digest, resultB.digest);
-      assert.deepEqual(resultA.manifest, resultB.manifest);
-      // The manifest itself must never leak the local root directory.
-      for (const entry of resultA.manifest) {
-        assert.ok(!entry.sourcePath.includes(dirA));
-        assert.ok(!entry.depositName.includes(dirA));
-      }
-    });
-  });
+test("unordered keyword and related-identifier order does not affect the digest", () => {
+  const m = metadata();
+  const baseline = createPublicationIdentity(m, manifest).digest;
+  const changed = createPublicationIdentity({
+    ...m,
+    keywords: [...m.keywords].reverse(),
+    relatedIdentifiers: [...m.relatedIdentifiers].reverse(),
+  }, manifest).digest;
+  assert.equal(baseline, changed);
 });
 
-test("assemblePackage digest changes when a selected file's content changes", async () => {
-  await withTempDir(async (dir) => {
-    await writeFile(join(dir, "readings.csv"), "x,y\n1,2\n");
-    const files = [{ sourcePath: "readings.csv", depositName: "readings.csv" }];
-
-    const before = await assemblePackage(dir, "1", metadata, files);
-    assert.equal(before.ok, true);
-
-    await writeFile(join(dir, "readings.csv"), "x,y\n1,3\n");
-    const after = await assemblePackage(dir, "1", metadata, files);
-    assert.equal(after.ok, true);
-
-    if (!before.ok || !after.ok) return;
-    assert.notEqual(before.digest, after.digest);
-  });
+test("selected file mutation changes the digest through the manifest", () => {
+  const baseline = createPublicationIdentity(metadata(), manifest).digest;
+  const changedManifest: FileManifest = {
+    ...manifest,
+    entries: manifest.entries.map((entry, index) => index === 0 ? { ...entry, sha256: "c".repeat(64) } : entry),
+  };
+  const changed = createPublicationIdentity(metadata(), changedManifest).digest;
+  assert.notEqual(baseline, changed);
 });
 
-test("computePackageDigest changes when a file's sourcePath (deposit path) is renamed", () => {
-  const manifestA: FileManifestEntry[] = [
-    { sourcePath: "a.txt", depositName: "a.txt", size: 5, sha256: "abc123" },
-  ];
-  const manifestB: FileManifestEntry[] = [
-    { sourcePath: "renamed.txt", depositName: "a.txt", size: 5, sha256: "abc123" },
-  ];
-  const a = computePackageDigest("1", metadata, manifestA);
-  const b = computePackageDigest("1", metadata, manifestB);
-  assert.notEqual(a, b);
+test("absent optional value and permitted empty value remain distinct", () => {
+  const m = metadata();
+  const withEmpty = createPublicationIdentity(m, manifest).digest;
+  const { notes: _notes, ...withoutNotes } = m;
+  const absent = createPublicationIdentity(withoutNotes, manifest).digest;
+  assert.notEqual(withEmpty, absent);
 });
 
-test("computePackageDigest changes when a file's depositName changes", () => {
-  const manifestA: FileManifestEntry[] = [
-    { sourcePath: "a.txt", depositName: "a.txt", size: 5, sha256: "abc123" },
-  ];
-  const manifestB: FileManifestEntry[] = [
-    { sourcePath: "a.txt", depositName: "renamed.txt", size: 5, sha256: "abc123" },
-  ];
-  const a = computePackageDigest("1", metadata, manifestA);
-  const b = computePackageDigest("1", metadata, manifestB);
-  assert.notEqual(a, b);
-});
-
-test("computePackageDigest matches a known golden value for a fixed input", () => {
-  const manifest: FileManifestEntry[] = [
-    { sourcePath: "a.txt", depositName: "a.txt", size: 5, sha256: "abc123" },
-  ];
-  const digest = computePackageDigest("1", metadata, manifest);
-  assert.equal(digest, "sha256:22b488c345bf98747e47890b092c6b8a16f5cf435d22c80c45024ae091ee62dc");
-});
-
-test("assemblePackage fails without a digest when a file is unsafe", async () => {
-  await withTempDir(async (dir) => {
-    const files = [{ sourcePath: "../outside.txt", depositName: "outside.txt" }];
-    const result = await assemblePackage(dir, "1", metadata, files);
-    assert.equal(result.ok, false);
-    assert.ok(!result.ok && result.issues.length > 0);
-  });
+test("null optional metadata is rejected rather than canonicalized as absent", () => {
+  assert.throws(
+    () => createPublicationIdentity({ ...metadata(), license: null }, manifest),
+    (error: unknown) => error instanceof PackageIdentityError && error.code === "invalid_metadata",
+  );
 });

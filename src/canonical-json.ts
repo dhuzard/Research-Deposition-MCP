@@ -1,40 +1,51 @@
-export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+export type CanonicalJsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | CanonicalJsonValue[]
+  | { [key: string]: CanonicalJsonValue };
 
-/**
- * Deep-clones a value into a canonical form: object keys sorted, `undefined`
- * values dropped. Arrays keep their order (order is meaningful).
- */
-export function canonicalize(value: unknown): JsonValue {
-  if (value === null || typeof value === "boolean" || typeof value === "string") {
-    return value;
-  }
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) {
-      throw new TypeError(`Cannot canonicalize non-finite number: ${value}`);
-    }
-    if (Number.isInteger(value) && !Number.isSafeInteger(value)) {
-      throw new TypeError(`Cannot canonicalize unsafe integer: ${value}`);
-    }
-    return value;
-  }
-  if (Array.isArray(value)) {
-    return value.map((item) => canonicalize(item));
-  }
-  if (typeof value === "object") {
-    const source = value as Record<string, unknown>;
-    const keys = Object.keys(source)
-      .filter((key) => source[key] !== undefined)
-      .sort();
-    const result: Record<string, JsonValue> = {};
-    for (const key of keys) {
-      result[key] = canonicalize(source[key]);
-    }
-    return result;
-  }
-  throw new TypeError(`Cannot canonicalize value of type ${typeof value}`);
+function compareCodeUnits(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
 }
 
-/** Deterministic JSON serialization of a canonicalized value. */
-export function canonicalStringify(value: unknown): string {
-  return JSON.stringify(canonicalize(value));
+/**
+ * Project-specific canonical JSON v1.
+ *
+ * - object keys are sorted by UTF-16 code-unit order;
+ * - arrays retain their supplied order;
+ * - strings are serialized by JSON.stringify (callers normalize semantic
+ *   strings before reaching this layer);
+ * - numbers must be finite safe integers;
+ * - undefined and non-JSON values are rejected by construction.
+ */
+export function canonicalJson(value: CanonicalJsonValue): string {
+  if (value === null) return "null";
+  if (typeof value === "boolean" || typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || !Number.isSafeInteger(value)) {
+      throw new TypeError("Canonical JSON only supports finite safe integers.");
+    }
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+  }
+
+  const keys = Object.keys(value).sort(compareCodeUnits);
+  const members = keys.map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`);
+  return `{${members.join(",")}}`;
+}
+
+export function canonicalJsonLine(value: CanonicalJsonValue): string {
+  return `${canonicalJson(value)}\n`;
+}
+
+export function normalizeCanonicalString(value: string): string {
+  return value.normalize("NFC");
+}
+
+export function compareCanonicalStrings(a: string, b: string): number {
+  return compareCodeUnits(a, b);
 }
