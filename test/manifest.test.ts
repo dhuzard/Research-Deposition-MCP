@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, rename, rm, symlink, unlink, writeFile } from "node:fs/
 import os from "node:os";
 import path from "node:path";
 import {
+  buildExplicitFileManifest,
   buildFileManifest,
   canonicalizeManifest,
   ManifestError,
@@ -177,4 +178,81 @@ test("rejects symbolic links instead of following them", async (t) => {
       (error: unknown) => error instanceof ManifestError && error.code === "symlink_rejected",
     );
   });
+});
+
+test("buildExplicitFileManifest rejects a symlinked intermediate directory in the source path", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("Windows symlink creation may require elevated privileges");
+    return;
+  }
+
+  await withFixture(async (root) => {
+    const outsideDir = await mkdtemp(path.join(os.tmpdir(), "research-deposition-outside-"));
+    try {
+      await writeFile(path.join(outsideDir, "secret.txt"), "outside contents\n");
+      // "linked" looks like an ordinary subdirectory of root, but it is a
+      // symlink pointing entirely outside the declared root.
+      await symlink(outsideDir, path.join(root, "linked"), "dir");
+
+      const outcome = await buildExplicitFileManifest(root, [
+        { sourcePath: "linked/secret.txt", depositPath: "secret.txt" },
+      ]);
+
+      assert.equal(outcome.manifest, undefined);
+      assert.ok(outcome.issues.some((issue) => issue.code === "symlink_rejected"));
+    } finally {
+      await rm(outsideDir, { recursive: true, force: true });
+    }
+  });
+});
+
+test("buildExplicitFileManifest accepts files nested under real (non-symlinked) directories", async () => {
+  await withFixture(async (root) => {
+    const outcome = await buildExplicitFileManifest(root, [
+      { sourcePath: "nested/notes.md", depositPath: "notes.md" },
+    ]);
+
+    assert.ok(outcome.manifest);
+    assert.equal(outcome.issues.length, 0);
+    assert.equal(outcome.manifest?.entries[0].sourcePath, "nested/notes.md");
+  });
+});
+
+test("buildExplicitFileManifest rejects a symlinked package root", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("Windows symlink creation may require elevated privileges");
+    return;
+  }
+
+  const realRoot = await mkdtemp(path.join(os.tmpdir(), "research-deposition-real-root-"));
+  const parent = await mkdtemp(path.join(os.tmpdir(), "research-deposition-link-parent-"));
+  try {
+    await writeFile(path.join(realRoot, "file.txt"), "outside via root symlink\n");
+    const linkedRoot = path.join(parent, "linked-root");
+    await symlink(realRoot, linkedRoot, "dir");
+    const outcome = await buildExplicitFileManifest(linkedRoot, [
+      { sourcePath: "file.txt", depositPath: "file.txt" },
+    ]);
+    assert.equal(outcome.manifest, undefined);
+    assert.ok(outcome.issues.some((issue) => issue.code === "symlink_rejected"));
+  } finally {
+    await rm(realRoot, { recursive: true, force: true });
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("buildExplicitFileManifest uses raw safe filesystem names while serializing NFC paths", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "research-deposition-explicit-unicode-"));
+  try {
+    const decomposedName = "e\u0301chantillon.txt";
+    await writeFile(path.join(root, decomposedName), "unicode explicit path\n");
+    const outcome = await buildExplicitFileManifest(root, [
+      { sourcePath: decomposedName, depositPath: "data.txt" },
+    ]);
+    assert.ok(outcome.manifest);
+    assert.equal(outcome.issues.length, 0);
+    assert.equal(outcome.manifest?.entries[0].sourcePath, "échantillon.txt");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

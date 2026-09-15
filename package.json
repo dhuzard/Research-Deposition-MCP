@@ -6,7 +6,8 @@
   "main": "build/src/index.js",
   "bin": {
     "research-deposition-mcp": "./build/src/index.js",
-    "research-deposition-approve": "./build/src/approval-cli.js"
+    "research-deposition-approve": "./build/src/approval-cli.js",
+    "research-deposition": "./build/src/cli.js"
   },
   "files": ["build/", "README.md", "LICENSE"],
   "scripts": {
